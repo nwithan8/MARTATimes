@@ -131,14 +131,15 @@ def get_save_map(buses, filename):
         pins = ""
         count = 1
         for b in buses:
-            pins += 'pin-s-{count}+000000({long},{lat})),'.format(
+            pins += 'pin-s-{count}+000000({long},{lat}),'.format(
                 count=str(count),
                 long=str(b.longitude),
                 lat=str(b.latitude)
             )
             count += 1
         pins = pins[:-1]
-        res = requests.get('https://api.mapbox.com/styles/v1/mapbox/traffic-day-v2/static/{pins}/auto/400x300@2x?access_token={token}'.format(
+        res = requests.get('https://api.mapbox.com/styles/v1/mapbox/traffic-day-v2/static/'
+                           '{pins}/auto/400x300@2x?access_token={token}'.format(
             pins=pins,
             token=mapbox_key
         ), stream=True)
@@ -212,7 +213,8 @@ def train_arrival_times(station, direction=None, line=None):
 
 def respond(status, response, image=None):
     if image:
-        twitter.update_with_media(image, '@{} {}'.format(str(status.user.screen_name), response), in_reply_to_status_id=status.id)
+        twitter.update_with_media(image, '@{} {}'.format(str(status.user.screen_name), response),
+                                  in_reply_to_status_id=status.id)
         os.remove(image)
     else:
         twitter.update_status('@{} {}'.format(str(status.user.screen_name), response), in_reply_to_status_id=status.id)
