@@ -24,6 +24,9 @@ twitter = tweepy.API(auth)
 # LocationIQ Credentials
 location_iq_key = os.environ.get('LOCATION_IQ_KEY')
 
+# Mapbox Credentials
+mapbox_key = os.environ.get('MAPBOX_KEY')
+
 # Logging
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s [%(levelname)8s] %(message)s')
@@ -60,7 +63,7 @@ def process_tweet(status):
                     starting_station = station
         if starting_station:
             if ending_station and ending_station != starting_station:
-                return train_travel_time(startPoint=starting_station, endPoint=ending_station)
+                return train_travel_time(startPoint=starting_station, endPoint=ending_station), None
             else:
                 for direct, proper in directions.items():
                     if direct in text and not station_or_direction(text[text.index(direct):]):
@@ -70,16 +73,16 @@ def process_tweet(status):
                     if li in text:
                         line = proper
                         break
-                return train_arrival_times(station=starting_station, direction=direction, line=line)
-        return "I don't know what you're asking. Please include which station(s)."
+                return train_arrival_times(station=starting_station, direction=direction, line=line), None
+        return "I don't know what you're asking. Please include which station(s).", None
     if 'bus' in text:
         for word in text:
             if word.isnumeric() and int(word) in bus_routes:
                 return bus_location(routeNumber=int(word))
-        return "I don't know what you're asking. Please include which route number."
+        return "I don't know what you're asking. Please include which route number.", None
     return "I don't know what you're asking.\n" \
            "If you'd like train times, please include the word 'train' and which station(s).\n" \
-           "If you'd like bus times, please include the word 'bus' and which route number."
+           "If you'd like bus times, please include the word 'bus' and which route number.", None
 
 
 def station_or_direction(text):
@@ -123,23 +126,53 @@ def get_nearest_address(latitude: str, longitude: str):
     return '{}{}'.format((house_number + " " if house_number else ""), (road if road else ""))
 
 
+def get_save_map(buses, filename):
+    if buses:
+        pins = ""
+        count = 1
+        for b in buses:
+            pins += 'pin-s-{count}+000000({long},{lat})),'.format(
+                count=str(count),
+                long=str(b.longitude),
+                lat=str(b.latitude)
+            )
+            count += 1
+        pins = pins[:-1]
+        res = requests.get('https://api.mapbox.com/styles/v1/mapbox/traffic-day-v2/static/{pins}/auto/400x300@2x?access_token={token}'.format(
+            pins=pins,
+            token=mapbox_key
+        ), stream=True)
+        if res.status_code == 200:
+            with open(filename, 'wb') as image:
+                for chunk in res:
+                    image.write(chunk)
+                image.close()
+            return filename
+    return None
+
+
 def bus_location(routeNumber: int):
     buses = get_buses(route=routeNumber)
     if buses:
+        map_buses = []
         final_message = ""
+        count = 1
         for b in buses:
             if len(final_message) < 210:
                 address = get_nearest_address(b.latitude, b.longitude)
                 if address:
-                    final_message += 'Bus {id} - near {address}\n'.format(
+                    final_message += '{count}) Bus {id} - near {address}\n'.format(
+                        count=str(count),
                         id=str(b.vehicle),
                         address=address
                     )
+                    count += 1
+                    map_buses.append(b)
         if len(final_message) < 257:
             final_message += 'itsmarta.com/{id}.aspx'.format(id=routeNumber)
-        return final_message
+        return final_message, get_save_map(map_buses, 'tmp/map.png')
     else:
-        return "No buses on that route right now."
+        return "No buses on that route right now.", None
 
 
 def train_travel_time(startPoint, endPoint):
@@ -177,8 +210,12 @@ def train_arrival_times(station, direction=None, line=None):
         return "No trains near that station."
 
 
-def respond(status, response):
-    twitter.update_status('@{} {}'.format(str(status.user.screen_name), response), in_reply_to_status_id=status.id)
+def respond(status, response, image=None):
+    if image:
+        twitter.update_with_media(image, '@{} {}'.format(str(status.user.screen_name), response), in_reply_to_status_id=status.id)
+        os.remove(image)
+    else:
+        twitter.update_status('@{} {}'.format(str(status.user.screen_name), response), in_reply_to_status_id=status.id)
     log.info("Responded with: {}".format(response))
 
 
@@ -186,10 +223,10 @@ class StdOutListener(StreamListener):
 
     def on_status(self, status):
         if marta_mentioned(status):
-            response = process_tweet(status)
+            response, image = process_tweet(status)
             log.info("Replying to this tweet from @{}: '{}'".format(status.user.screen_name, status.text))
             log.info('Replying with: {}'.format(response))
-            # respond(status, response)
+            respond(status, response, image)
         return True
 
     def on_error(self, status_code):

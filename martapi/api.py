@@ -1,5 +1,4 @@
 import requests
-import requests_cache
 from json import loads
 from os import getenv
 from functools import wraps
@@ -13,8 +12,6 @@ _BASE_URL = 'http://developer.itsmarta.com'
 _TRAIN_PATH = '/RealtimeTrain/RestServiceNextTrain/GetRealtimeArrivals'
 _BUS_PATH = '/BRDRestService/RestBusRealTimeService/GetAllBus'
 _BUS_ROUTE_PATH = '/BRDRestService/RestBusRealTimeService/GetBusByRoute/'
-
-requests_cache.install_cache('marta_api_cache', backend='sqlite', expire_after=_CACHE_EXPIRE)
 
 
 def require_api_key(func):
