@@ -26,7 +26,7 @@ location_iq_key = os.environ.get('LOCATION_IQ_KEY')
 
 # Logging
 
-logging.basicConfig(level=logging.DEBUG, stream=sys.stdout, format='%(asctime)s [%(levelname)8s] %(message)s')
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s [%(levelname)8s] %(message)s')
 log = logging.getLogger('')
 
 translator = str.maketrans('', '', string.punctuation)
