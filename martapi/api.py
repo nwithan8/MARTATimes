@@ -1,5 +1,5 @@
 import requests
-#import requests_cache
+import requests_cache
 from json import loads
 from os import getenv
 from functools import wraps
@@ -14,13 +14,14 @@ _TRAIN_PATH = '/RealtimeTrain/RestServiceNextTrain/GetRealtimeArrivals'
 _BUS_PATH = '/BRDRestService/RestBusRealTimeService/GetAllBus'
 _BUS_ROUTE_PATH = '/BRDRestService/RestBusRealTimeService/GetBusByRoute/'
 
-#requests_cache.install_cache('marta_api_cache', backend='sqlite', expire_after=_CACHE_EXPIRE)
+requests_cache.install_cache('marta_api_cache', backend='sqlite', expire_after=_CACHE_EXPIRE)
 
 
 def require_api_key(func):
     """
     Decorator to ensure an API key is present
     """
+
     @wraps(func)
     def with_key(*args, **kwargs):
         api_key = kwargs.get('api_key')
@@ -28,11 +29,12 @@ def require_api_key(func):
             raise APIKeyError()
         kwargs['api_key'] = api_key if api_key else _API_KEY
         return func(*args, **kwargs)
+
     return with_key
 
 
 @require_api_key
-def get_trains(line=None, station=None, destination=None, api_key=None):
+def get_trains(line: str = None, station: str = None, destination: str = None, direction: str = None, api_key=None):
     """
     Query API for train information
     :param line (str): train line identifier filter (red, gold, green, or blue)
@@ -57,13 +59,14 @@ def get_trains(line=None, station=None, destination=None, api_key=None):
     trains = [t for t in trains if
               (t.line.lower() == line.lower() if line is not None else True) and
               (t.station.lower() == station.lower() if station is not None else True) and
-              (t.destination.lower() == destination.lower() if destination is not None else True)]
+              (t.destination.lower() == destination.lower() if destination is not None else True) and
+              (t.direction.lower() == direction.lower() if direction is not None else True)]
 
     return trains
 
 
 @require_api_key
-def get_buses(route=None, api_key=None):
+def get_buses(route=None, stop_id: int = None, bus_id: int = None, api_key=None):
     """
     Query API for bus information
     :param route (int): route number
@@ -81,4 +84,8 @@ def get_buses(route=None, api_key=None):
         raise APIKeyError('Your API key seems to be invalid. Try visiting {}.'.format(url))
 
     data = loads(response.text)
-    return [Bus(b) for b in data]
+    buses = [Bus(b) for b in data]
+    buses = [b for b in buses if
+             (int(b.stop_id) == stop_id if stop_id is not None else True) and
+             (int(b.vehicle) == bus_id if bus_id is not None else True)]
+    return buses
