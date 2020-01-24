@@ -64,7 +64,6 @@ def process_tweet(status):
             for station, info in stations.items():
                 for keyword in info[0]:
                     if keyword in text:
-                        print(keyword)
                         if keyword == 'lake':
                             station = east_or_west_lake(text[text.index(keyword) - 1])  # check word before lake
                         if starting_station:
@@ -72,7 +71,6 @@ def process_tweet(status):
                             break
                         else:
                             starting_station = station
-        print('start: {}, end: {}'.format(starting_station, ending_station))
         if starting_station:
             if ending_station and ending_station != starting_station:
                 return train_travel_time(startPoint=starting_station, endPoint=ending_station), None
@@ -182,9 +180,10 @@ def bus_location(routeNumber: int):
             if len(final_message) < 210:
                 address = get_nearest_address(b.latitude, b.longitude)
                 if address:
-                    final_message += '{count}) Bus {id} - near {address}\n'.format(
+                    final_message += '{count}) Bus {id} ({dir}) - near {address}\n'.format(
                         count=str(count),
                         id=str(b.vehicle),
+                        dir=b.direction,
                         address=address
                     )
                     count += 1
