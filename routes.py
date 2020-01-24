@@ -108,11 +108,15 @@ stations = {
             'congress',
             'omnidome',
             'dome',
+            'mercedes',
+            'benz,'
             'mercedesbenz',
             'mercedes-benz',
             'cnn',
             'statefarmarena',
+            'farm',
             'philipsarena',
+            'philips',
             'gwcc',
             'georgiaworldcongresscenter',
             'worldcongresscenter'
@@ -142,7 +146,6 @@ stations = {
     ],
     "EAST LAKE STATION": [
         [
-            'lake',
             'eastlake'
         ],
         "2260 College Ave Atlanta, GA 30307",
@@ -174,7 +177,8 @@ stations = {
         [
             'five',
             'fivepoints',
-            '5points'
+            '5points',
+            'points'
         ],
         "30 Alabama St SW Atlanta, GA 30303",
         "https://itsmarta.com/Five-Points.aspx",
@@ -196,7 +200,8 @@ stations = {
             'state',
             'georgiastate',
             'gsu',
-            'school'
+            'school',
+            'capitol'
         ],
         "170 Piedmont Ave, SE Atlanta, GA 30303",
         "https://itsmarta.com/Georgia-State.aspx",
@@ -379,7 +384,6 @@ stations = {
     ],
     "WEST LAKE STATION": [
         [
-            'lake',
             'westlake'
         ],
         "80 Anderson Ave, SW Atlanta, GA 30314",

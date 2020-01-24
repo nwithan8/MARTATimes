@@ -54,13 +54,25 @@ def process_tweet(status):
         ending_station = None
         direction = None
         line = None
-        for keyword, station in nicknames.items():
-            if keyword in text:
-                if starting_station:
-                    ending_station = station
-                    break
-                else:
-                    starting_station = station
+        if 'lake' in text:
+            station = east_or_west_lake(text[text.index('lake') - 1])  # check word before lake
+            if starting_station:
+                ending_station = station
+            else:
+                starting_station = station
+        if not ending_station:
+            for station, info in stations.items():
+                for keyword in info[0]:
+                    if keyword in text:
+                        print(keyword)
+                        if keyword == 'lake':
+                            station = east_or_west_lake(text[text.index(keyword) - 1])  # check word before lake
+                        if starting_station:
+                            ending_station = station
+                            break
+                        else:
+                            starting_station = station
+        print('start: {}, end: {}'.format(starting_station, ending_station))
         if starting_station:
             if ending_station and ending_station != starting_station:
                 return train_travel_time(startPoint=starting_station, endPoint=ending_station), None
@@ -83,6 +95,14 @@ def process_tweet(status):
     return "I don't know what you're asking.\n" \
            "If you'd like train times, please include the word 'train' and which station(s).\n" \
            "If you'd like bus times, please include the word 'bus' and which route number.", None
+
+
+def east_or_west_lake(word):
+    if word.startswith('e'):
+        return 'EAST LAKE STATION'
+    if word.startswith('w'):
+        return 'WEST LAKE STATION'
+    return None
 
 
 def station_or_direction(text):
