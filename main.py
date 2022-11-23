@@ -1,129 +1,43 @@
 #!/usr/bin/python3
 
 import os
-import string
+from typing import List, Union, Any
+
+import marta
 import tweepy
-from tweepy.streaming import StreamListener
-from tweepy import Stream
-from martapi.api import get_buses, get_trains
-from routes import *
-import logging
-import sys
-import requests
+from dotenv import load_dotenv
+from marta import RailClient, BusClient, TrainStations
+from marta.enums.vehicle_type import VehicleType
+
+import logs as logging
+
+load_dotenv()
 
 # Twitter API Credentials
-consumer_key = os.environ.get('TWITTER_CONSUMER_KEY')
-consumer_secret = os.environ.get('TWITTER_CONSUMER_SECRET')
-access_token = os.environ.get('TWITTER_ACCESS_TOKEN')
-access_secret = os.environ.get('TWITTER_ACCESS_SECRET')
+TWITTER_HANDLE = "MARTAtimes"
+TWITTER_CONSUMER_KEY = os.getenv("TWITTER_CONSUMER_KEY")
+TWITTER_CONSUMER_SECRET = os.getenv("TWITTER_CONSUMER_SECRET")
+TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
+TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_SECRET")
+TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
 
-auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
-auth.set_access_token(access_token, access_secret)
-twitter = tweepy.API(auth)
+# MARTA API Credentials
+MARTA_API_KEY = os.getenv("MARTA_API_KEY")
 
 # LocationIQ Credentials
-location_iq_key = os.environ.get('LOCATION_IQ_KEY')
+LOCATION_IQ_KEY = os.environ.get('LOCATION_IQ_KEY')
 
 # Mapbox Credentials
-mapbox_key = os.environ.get('MAPBOX_KEY')
-
-# Logging
-
-logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s [%(levelname)8s] %(message)s')
-log = logging.getLogger('')
-
-translator = str.maketrans('', '', string.punctuation)
+MAPBOX_KEY = os.environ.get('MAPBOX_KEY')
 
 
-def marta_mentioned(status):
-    if hasattr(status, 'retweeted_status'):
-        return False
-    elif not status.entities['user_mentions']:
-        return False
-    else:
-        for u in status.entities['user_mentions']:
-            if u['screen_name'].lower() == 'martatimes':
-                return True
-        return False
-
-
-def process_tweet(status):
-    text = status.text.lower().translate(translator).split()
-    if 'train' in text:
-        starting_station = None
-        ending_station = None
-        direction = None
-        line = None
-        if 'lake' in text:
-            station = east_or_west_lake(text[text.index('lake') - 1])  # check word before lake
-            if starting_station:
-                ending_station = station
-            else:
-                starting_station = station
-        if not ending_station:
-            for station, info in stations.items():
-                for keyword in info[0]:
-                    if keyword in text:
-                        if keyword == 'lake':
-                            station = east_or_west_lake(text[text.index(keyword) - 1])  # check word before lake
-                        if starting_station:
-                            ending_station = station
-                            break
-                        else:
-                            starting_station = station
-        if starting_station:
-            if ending_station and ending_station != starting_station:
-                return train_travel_time(startPoint=starting_station, endPoint=ending_station), None
-            else:
-                for direct, proper in directions.items():
-                    if direct in text and not station_or_direction(text[text.index(direct):]):
-                        direction = proper
-                        break
-                for li, proper in lines.items():
-                    if li in text:
-                        line = proper
-                        break
-                return train_arrival_times(station=starting_station, direction=direction, line=line), None
-        return "I don't know what you're asking. Please include which station(s).", None
-    if 'bus' in text:
-        for word in text:
-            if word.isnumeric() and int(word) in bus_routes:
-                return bus_location(routeNumber=int(word))
-        return "I don't know what you're asking. Please include which route number.", None
-    return "I don't know what you're asking.\n" \
-           "If you'd like train times, please include the word 'train' and which station(s).\n" \
-           "If you'd like bus times, please include the word 'bus' and which route number.", None
-
-
-def east_or_west_lake(word):
-    if word.startswith('e'):
-        return 'EAST LAKE STATION'
-    if word.startswith('w'):
-        return 'WEST LAKE STATION'
-    return None
-
-
-def station_or_direction(text):
+def can_add_to_tweet(existing_text: str, text_to_add: str) -> bool:
     """
-    Returns True if stations, False if direction
+    Checks if adding text_to_add to existing_text will exceed Twitter's 280-character limit
     """
-    if len(text) == 1:
+    if len(existing_text) + len(text_to_add) > 280:
         return False
-    if text[0].lower() == "north":
-        if text[1].lower() == "springs" or text[1].lower() == "avenue":
-            return True
-        else:
-            return False
-    elif text[0].lower() == "east":
-        if text[1].lower() == "lake" or text[1].lower() == "point":
-            return True
-        else:
-            return False
-    elif text[0].lower() == "west":
-        if text[1].lower() == "lake" or text[1].lower() == "end":
-            return True
-        else:
-            return False
+    return True
 
 
 def get_nearest_address(latitude: str, longitude: str):
@@ -195,65 +109,168 @@ def bus_location(routeNumber: int):
         return "No buses on that route right now.", None
 
 
-def train_travel_time(startPoint, endPoint):
-    if stations[startPoint][4] != stations[endPoint][4]:  # one is ns, other is ew (5points is nsew, but time = 0,
-        # so not effect)
-        # start -> 5p + 5p -> end
-        time = abs(stations[startPoint][3]) + abs(stations[endPoint][3])
-    else:
-        # both on same track, so start - end
-        time = abs(stations[startPoint][3] - stations[endPoint][3])
-    return "It takes approximately {time} {minutes} to go from {start} to {end}".format(
-        time=str(time),
-        minutes=('minutes' if time > 1 else 'minute'),
-        start=startPoint.title(),
-        end=endPoint.title()
-    )
+class TweetProcessor:
+    def __init__(self, tweet: tweepy.Tweet, marta_api_key: str):
+        self.tweet = tweet
+        self._marta_api_key = marta_api_key
 
+    @property
+    def _tweet_text(self) -> str:
+        return self.tweet.text.lower().strip()
 
-def train_arrival_times(station, direction=None, line=None):
-    final_trains = get_trains(line=line, station=station, direction=direction)
-    if final_trains:
-        final_message = ""
-        for t in final_trains:
-            if len(final_message) < 240:  # good buffer for the 280 character limit
-                final_message += '{line} - {dest} ({dir}): ({time})\n'.format(
-                    line=t.line.capitalize(),
-                    dest=t.destination,
-                    dir=t.direction,
-                    time=(t.waiting_time if t.waiting_time[0].isdigit() else t.waiting_time)
-                )
-            else:
+    @property
+    def _tweet_about_trains(self):
+        return 'train' in self._tweet_text
+
+    @property
+    def _tweet_about_buses(self):
+        return 'bus' in self._tweet_text
+
+    def _get_train_travel_time_message(self, start_station: marta.TrainStations, end_station: marta.TrainStations) -> str:
+        minutes = start_station.details.time_to(end_station.details)
+        return f"It takes approximately {minutes}{'s' if minutes > 1 else ''} to go from {start_station.details.station_name} to {end_station.details.station_name}"
+
+    def _get_train_arrival_times_message(self, station: marta.TrainStations, direction=None, line=None) -> str:
+        rail_client = RailClient(api_key=self._marta_api_key)
+
+        arrivals = rail_client.get_arrivals()
+        if direction:
+            arrivals = arrivals.heading(direction=direction)
+        if line:
+            arrivals = arrivals.on_line(line=line)
+
+        if not arrivals:
+            return f"No trains near {station.details.station_name} right now."
+
+        message = ""
+        for arrival in arrivals:
+            arrival_entry = f"{arrival.line} - {arrival.destination} ({arrival.direction.to_string(vehicle_type=VehicleType.TRAIN)}): {arrival.waiting_time.seconds * 60} min(s)\n "
+            if not can_add_to_tweet(message, arrival_entry):
                 break
-        return final_message
-    else:
-        return "No trains near that station."
+            message += f"{arrival_entry}"
+
+        return message
+
+    def _get_train_line_from_tweet(self) -> Union[marta.TrainLine, None]:
+        possible_lines = marta.TrainLine.__members__.keys()
+        for word in self._tweet_text.split():
+            word = word.strip().upper()
+            if word in possible_lines:
+                return marta.TrainLine[word]
+        return None
+
+    def _get_direction_from_tweet(self) -> Union[marta.Direction, None]:
+        possible_directions = marta.Direction.__members__.keys()
+        for word in self._tweet_text.split():
+            word = word.strip().upper().replace("BOUND", "")
+            if word in possible_directions:
+                return marta.Direction[word]
+        return None
+
+    def _get_train_stations_from_tweet(self) -> List[marta.TrainStations]:
+        """
+        Get all train stations mentioned in tweet
+        """
+        stations = []
+        for word in self._tweet_text.split():
+            matching_station = TrainStations.from_keyword(keyword=word)
+            if matching_station:
+                stations.append(matching_station)
+
+        return stations
+
+    def _process_train_tweet(self) -> str:
+        """
+        Process a tweet about trains, returning a response
+        """
+        stations = self._get_train_stations_from_tweet()
+        direction = self._get_direction_from_tweet()
+        line = self._get_train_line_from_tweet()
+
+        if len(stations) == 0:
+            return "I couldn't detect a station in your tweet. Please include at least one station name."
+        elif len(stations) == 1:
+            # get arrival times for that station
+            return self._get_train_arrival_times_message(station=stations[0], direction=direction, line=line)
+        else:
+            # get travel time between the two stations (use first two stations detected)
+            if stations[0] == stations[1]:
+                # Might have been an accident, or they might be asking about a station's arrival times
+                return self._get_train_arrival_times_message(station=stations[0], direction=direction, line=line)
+            return self._get_train_travel_time_message(start_station=stations[0], end_station=stations[1])
+
+    def _process_bus_tweet(self) -> [str, str]:
+        """
+        Process a tweet about buses, returning a response and an image
+        """
+        for word in self._tweet_text.split():
+            if word.isnumeric() and int(word) in []:
+                return bus_location(routeNumber=int(word))
+        return "I don't know what you're asking. Please include which route number.", None
+
+    def process(self) -> [str, Union[str, None]]:
+        """
+        Process the tweet and return a response and an optional image link
+        """
+        if self._tweet_about_trains:
+            return self._process_train_tweet(), None
+        elif self._tweet_about_buses:
+            return self._process_bus_tweet()
+        else:
+            return """I don't know what you're asking. 
+            If you'd like train times, please include the word 'train' and which station(s).
+            If you'd like bus times, please include the word 'bus' and which route number.""", None
 
 
-def respond(status, response, image=None):
-    if image:
-        twitter.update_with_media(image, '@{} {}'.format(str(status.user.screen_name), response),
-                                  in_reply_to_status_id=status.id)
-        os.remove(image)
-    else:
-        twitter.update_status('@{} {}'.format(str(status.user.screen_name), response), in_reply_to_status_id=status.id)
-    log.info("Responded with: {}".format(response))
+class MartaTimesStream(tweepy.StreamingClient):
+    def __init__(self, client: tweepy.Client, bearer_token: str):
+        super().__init__(bearer_token=bearer_token)
+        self.tweeting_client: tweepy.Client = client
+
+    def respond_to_tweet(self, tweet: tweepy.Tweet, response: str, image_path: str = None):
+        logging.info(f"Responding to tweet {tweet.id}: {tweet.text}")
+        if image_path:
+            # TODO: upload image to twitter
+            pass
+        else:
+            self.tweeting_client.create_tweet(in_reply_to_tweet_id=tweet.id, text=response)
+        logging.info(f"Responded to tweet {tweet.id} with: {response}")
+
+    def on_connect(self):
+        logging.debug("Connected to Twitter API")
+
+    def on_disconnect(self):
+        logging.debug("Disconnected from Twitter API")
+
+    def on_tweet(self, tweet: tweepy.Tweet):
+        processor = TweetProcessor(tweet=tweet, marta_api_key=MARTA_API_KEY)
+        response_text, image_path = processor.process()
+        self.respond_to_tweet(tweet=tweet, response=response_text, image_path=image_path)
+
+    def on_errors(self, errors):
+        logging.error(f"Errors {errors}")
+
+    def on_exception(self, exception):
+        logging.error(f"Exception {exception}")
 
 
-class StdOutListener(StreamListener):
+if __name__ == '__main__':
+    # Set up logging
+    logging.init(app_name="MartaTimes", console_log_level="DEBUG", log_to_file=True)
 
-    def on_status(self, status):
-        if marta_mentioned(status):
-            response, image = process_tweet(status)
-            log.info("Replying to this tweet from @{}: '{}'".format(status.user.screen_name, status.text))
-            log.info('Replying with: {}'.format(response))
-            respond(status, response, image)
-        return True
+    # Set up Twitter client
+    client = tweepy.Client(bearer_token=TWITTER_BEARER_TOKEN,
+                           consumer_key=TWITTER_CONSUMER_KEY,
+                           consumer_secret=TWITTER_CONSUMER_SECRET,
+                           access_token=TWITTER_ACCESS_TOKEN,
+                           access_token_secret=TWITTER_ACCESS_TOKEN_SECRET)
 
-    def on_error(self, status_code):
-        log.error("Error, code" + str(status_code))
+    stream = MartaTimesStream(client=client,
+                              bearer_token=TWITTER_BEARER_TOKEN)
 
+    mention_filter = f"keyword (@{TWITTER_HANDLE} OR to:{TWITTER_HANDLE}) -from:{TWITTER_HANDLE} -is:retweet"
+    stream.add_rules(tweepy.StreamRule(mention_filter))
 
-l = StdOutListener()
-stream = Stream(auth, l)
-stream.filter(track=['martatimes'])
+    logging.debug("Listening for mentions...")
+
+    stream.filter(tweet_fields=["id", "text"])
