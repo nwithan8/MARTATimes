@@ -2,3 +2,4 @@ tweepy==4.12.*
 objectrest==2.0.*
 python-dotenv==0.21.0
 marta-python==0.3.*
+pydantic~=1.10.2

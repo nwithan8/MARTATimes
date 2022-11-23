@@ -1,13 +1,20 @@
 #!/usr/bin/python3
 
 import os
-from typing import List, Union, Any
+from typing import List, Union, Tuple
 
 import marta
 import tweepy
 from dotenv import load_dotenv
 from marta import RailClient, BusClient, TrainStations
 from marta.enums.vehicle_type import VehicleType
+from marta.models.bus import LegacyBus
+from marta.models.arrival import Arrival, Arrivals
+from marta.models.vehicle import VehiclePosition
+
+from modules.mapbox import generate_mapbox_map, MapBoxLocation
+from modules.locationiq import get_nearest_address, Address
+from modules.twitter import add_as_many_as_possible_to_tweet
 
 import logs as logging
 
@@ -30,83 +37,38 @@ LOCATION_IQ_KEY = os.environ.get('LOCATION_IQ_KEY')
 # Mapbox Credentials
 MAPBOX_KEY = os.environ.get('MAPBOX_KEY')
 
-
-def can_add_to_tweet(existing_text: str, text_to_add: str) -> bool:
-    """
-    Checks if adding text_to_add to existing_text will exceed Twitter's 280-character limit
-    """
-    if len(existing_text) + len(text_to_add) > 280:
-        return False
-    return True
+BUS_MAP_IMAGE_FILENAME = 'tmp/bus_map.png'
 
 
-def get_nearest_address(latitude: str, longitude: str):
+def get_nearest_address_to_bus(bus: LegacyBus) -> Union[str, None]:
     """
     Use locationiq.com API to get address of lat/long combo
     """
-    res = requests.get('https://us1.locationiq.com/v1/reverse.php', params={
-        'key': location_iq_key,
-        'lat': latitude,
-        'lon': longitude,
-        'format': 'json'
-    }).json()
-    if 'error' in res.keys():
-        return False
-    address = res.get('address')
-    house_number = address.get('house_number')
-    road = address.get('road')
-    return '{}{}'.format((house_number + " " if house_number else ""), (road if road else ""))
+    bus_position = bus.position
+    address: Union[Address, None] = get_nearest_address(api_key=LOCATION_IQ_KEY,
+                                                        latitude=bus_position.latitude,
+                                                        longitude=bus_position.longitude)
+    if address:
+        address_string = f'{address.house_number} {address.road}'.strip()
+        return address_string
 
-
-def get_save_map(buses, filename):
-    if buses:
-        pins = ""
-        count = 1
-        for b in buses:
-            pins += 'pin-s-{count}+000000({long},{lat}),'.format(
-                count=str(count),
-                long=str(b.longitude),
-                lat=str(b.latitude)
-            )
-            count += 1
-        pins = pins[:-1]
-        res = requests.get('https://api.mapbox.com/styles/v1/mapbox/traffic-day-v2/static/'
-                           '{pins}/auto/400x300@2x?access_token={token}'.format(
-            pins=pins,
-            token=mapbox_key
-        ), stream=True)
-        if res.status_code == 200:
-            with open(filename, 'wb') as image:
-                for chunk in res:
-                    image.write(chunk)
-                image.close()
-            return filename
     return None
 
 
-def bus_location(routeNumber: int):
-    buses = get_buses(route=routeNumber)
-    if buses:
-        map_buses = []
-        final_message = ""
-        count = 1
-        for b in buses:
-            if len(final_message) < 210:
-                address = get_nearest_address(b.latitude, b.longitude)
-                if address:
-                    final_message += '{count}) Bus {id} ({dir}) - near {address}\n'.format(
-                        count=str(count),
-                        id=str(b.vehicle),
-                        dir=b.direction,
-                        address=address
-                    )
-                    count += 1
-                    map_buses.append(b)
-        if len(final_message) < 257:
-            final_message += 'itsmarta.com/{id}.aspx'.format(id=routeNumber)
-        return final_message, get_save_map(map_buses, 'tmp/map.png')
-    else:
-        return "No buses on that route right now.", None
+def generate_bus_location_map_image(buses: List[LegacyBus], file_name: str) -> bool:
+    """
+    Generates a map image of the given buses and saves it to the given file_name
+    Returns True if successful, False otherwise
+    """
+    map_box_locations: List[MapBoxLocation] = []
+
+    for bus in buses:
+        bus_position: VehiclePosition = bus.position
+        map_box_location: MapBoxLocation = MapBoxLocation(longitude=bus_position.longitude,
+                                                          latitude=bus_position.latitude)
+        map_box_locations.append(map_box_location)
+
+    return generate_mapbox_map(locations=map_box_locations, file_name=file_name)
 
 
 class TweetProcessor:
@@ -126,35 +88,18 @@ class TweetProcessor:
     def _tweet_about_buses(self):
         return 'bus' in self._tweet_text
 
-    def _get_train_travel_time_message(self, start_station: marta.TrainStations, end_station: marta.TrainStations) -> str:
-        minutes = start_station.details.time_to(end_station.details)
-        return f"It takes approximately {minutes}{'s' if minutes > 1 else ''} to go from {start_station.details.station_name} to {end_station.details.station_name}"
-
-    def _get_train_arrival_times_message(self, station: marta.TrainStations, direction=None, line=None) -> str:
-        rail_client = RailClient(api_key=self._marta_api_key)
-
-        arrivals = rail_client.get_arrivals()
-        if direction:
-            arrivals = arrivals.heading(direction=direction)
-        if line:
-            arrivals = arrivals.on_line(line=line)
-
-        if not arrivals:
-            return f"No trains near {station.details.station_name} right now."
-
-        message = ""
-        for arrival in arrivals:
-            arrival_entry = f"{arrival.line} - {arrival.destination} ({arrival.direction.to_string(vehicle_type=VehicleType.TRAIN)}): {arrival.waiting_time.seconds * 60} min(s)\n "
-            if not can_add_to_tweet(message, arrival_entry):
-                break
-            message += f"{arrival_entry}"
-
-        return message
+    def _get_bus_routes_from_tweet(self) -> List[int]:
+        routes: List[int] = []
+        for word in self._tweet_text.split():
+            word = word.strip().upper()
+            if word.isdigit():
+                routes.append(int(word))
+        return routes
 
     def _get_train_line_from_tweet(self) -> Union[marta.TrainLine, None]:
         possible_lines = marta.TrainLine.__members__.keys()
         for word in self._tweet_text.split():
-            word = word.strip().upper()
+            word: str = word.strip().upper()
             if word in possible_lines:
                 return marta.TrainLine[word]
         return None
@@ -162,7 +107,7 @@ class TweetProcessor:
     def _get_direction_from_tweet(self) -> Union[marta.Direction, None]:
         possible_directions = marta.Direction.__members__.keys()
         for word in self._tweet_text.split():
-            word = word.strip().upper().replace("BOUND", "")
+            word: str = word.strip().upper().replace("BOUND", "")
             if word in possible_directions:
                 return marta.Direction[word]
         return None
@@ -171,44 +116,112 @@ class TweetProcessor:
         """
         Get all train stations mentioned in tweet
         """
-        stations = []
+        stations: List[TrainStations] = []
         for word in self._tweet_text.split():
-            matching_station = TrainStations.from_keyword(keyword=word)
+            matching_station: Union[TrainStations, None] = TrainStations.from_keyword(keyword=word)
             if matching_station:
                 stations.append(matching_station)
 
         return stations
 
+    def _get_bus_locations_message(self, route_id: int) -> Tuple[str, Union[str, None]]:
+        bus_client: BusClient = BusClient(api_key=self._marta_api_key)
+
+        buses: List[LegacyBus] = bus_client.get_buses(route=route_id)
+        if not buses:
+            return "No buses on that route right now.", None
+
+        link: str = f"itsmarta.com/{route_id}.aspx\n\n"
+
+        bus_entries: List[str] = []
+        for bus in buses:
+            bus_entry: str = f"Bus {bus.vehicle_id} ({bus.direction})"
+
+            address = get_nearest_address_to_bus(bus=bus)
+            if address:
+                bus_entry += f" - near {address}"
+
+            bus_entry += "\n"
+            bus_entries.append(bus_entry)
+
+        # We always have buses at this point
+        map_file_name: Union[str, None] = None
+        if generate_bus_location_map_image(buses=buses, file_name=BUS_MAP_IMAGE_FILENAME):
+            map_file_name: str = BUS_MAP_IMAGE_FILENAME
+
+        message, _ = add_as_many_as_possible_to_tweet(link, bus_entries)
+
+        return message, map_file_name
+
+    def _get_train_travel_time_message(self,
+                                       start_station: marta.TrainStations,
+                                       end_station: marta.TrainStations) -> str:
+        minutes = start_station.details.time_to(end_station.details)
+        return f"It takes approximately {minutes} minute{'s' if minutes > 1 else ''} to go from {start_station.details.station_name} to {end_station.details.station_name}"
+
+    def _get_train_arrival_times_message(self,
+                                         station: marta.TrainStations,
+                                         direction: marta.Direction = None,
+                                         line: marta.TrainLine = None) -> str:
+        rail_client: RailClient = RailClient(api_key=self._marta_api_key)
+
+        arrivals: Arrivals = rail_client.get_arrivals()
+        if direction:
+            arrivals: Arrivals = arrivals.heading(direction=direction)
+        if line:
+            arrivals: Arrivals = arrivals.on_line(line=line)
+
+        if not arrivals:
+            return f"No trains near {station.details.station_name} right now."
+
+        arrival_entries: List[str] = []
+        for arrival in arrivals:
+            waiting_minutes = arrival.waiting_time.seconds // 60
+            direction_string = arrival.direction.to_string(vehicle_type=VehicleType.TRAIN)
+            arrival_entry: str = f"{arrival.line} - {arrival.destination} ({direction_string}): {waiting_minutes} minute{'s' if waiting_minutes > 1 else ''}"
+            arrival_entries.append(arrival_entry)
+
+        message, _ = add_as_many_as_possible_to_tweet("", arrival_entries)
+
+        return message
+
     def _process_train_tweet(self) -> str:
         """
         Process a tweet about trains, returning a response
         """
-        stations = self._get_train_stations_from_tweet()
-        direction = self._get_direction_from_tweet()
-        line = self._get_train_line_from_tweet()
+        stations: List[TrainStations] = self._get_train_stations_from_tweet()
+        direction: Union[marta.Direction, None] = self._get_direction_from_tweet()
+        line: Union[marta.TrainLine, None] = self._get_train_line_from_tweet()
 
         if len(stations) == 0:
             return "I couldn't detect a station in your tweet. Please include at least one station name."
         elif len(stations) == 1:
             # get arrival times for that station
-            return self._get_train_arrival_times_message(station=stations[0], direction=direction, line=line)
+            station = stations[0]
+            return self._get_train_arrival_times_message(station=station, direction=direction, line=line)
         else:
             # get travel time between the two stations (use first two stations detected)
-            if stations[0] == stations[1]:
+            start_station: TrainStations = stations[0]
+            end_station: TrainStations = stations[1]
+            if start_station == end_station:
                 # Might have been an accident, or they might be asking about a station's arrival times
-                return self._get_train_arrival_times_message(station=stations[0], direction=direction, line=line)
-            return self._get_train_travel_time_message(start_station=stations[0], end_station=stations[1])
+                return self._get_train_arrival_times_message(station=start_station, direction=direction, line=line)
+            return self._get_train_travel_time_message(start_station=start_station, end_station=end_station)
 
-    def _process_bus_tweet(self) -> [str, str]:
+    def _process_bus_tweet(self) -> Tuple[str, Union[str, None]]:
         """
         Process a tweet about buses, returning a response and an image
         """
-        for word in self._tweet_text.split():
-            if word.isnumeric() and int(word) in []:
-                return bus_location(routeNumber=int(word))
-        return "I don't know what you're asking. Please include which route number.", None
+        routes: List[int] = self._get_bus_routes_from_tweet()
 
-    def process(self) -> [str, Union[str, None]]:
+        if len(routes) == 0:
+            return "I couldn't detect a bus route in your tweet. Please include at least one bus route number.", None
+        else:
+            # get locations for that route (use first route detected)
+            route: int = routes[0]
+            return self._get_bus_locations_message(route_id=route)
+
+    def process(self) -> Tuple[str, Union[str, None]]:
         """
         Process the tweet and return a response and an optional image link
         """
